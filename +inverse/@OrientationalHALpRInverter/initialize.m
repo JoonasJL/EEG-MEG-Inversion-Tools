@@ -29,7 +29,7 @@ function self = initialize(self,L,f_data)
     
         arguments
     
-            self (1,1) inverse.HALpRInverter
+            self (1,1) inverse.OrientationalHALpRInverter
     
             L (:,:) {mustBeA(L,["double","gpuArray"])}
     
@@ -48,11 +48,8 @@ function self = initialize(self,L,f_data)
         
 
     if strcmp(self.hyperprior_mode,"Sensitivity weights")
-        if isempty(self.beta) && not(strcmp(self.estimation_type,"None"))
+        if isempty(self.beta)
             self.beta = 3.5;
-        elseif strcmp(self.estimation_type,"None")
-            self.beta = 2/3;
-            self.n_map_iterations = 1;
         end
         self.theta0 = sqrt(0.5*(self.beta-1)*(self.beta-2)*trace(self.noise_cov)*(self.SNR - 1)./repelem(sum(reshape(sum(L.^2),3,[])),3));    
     end

@@ -1,5 +1,5 @@
 %% Copyright © 2025- Joonas Lahtinen and Alexandra Koulouri
-classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
+classdef GroupLaplaceInverter < inverse.CommonInverseParameters & handle
 
     %
     % GroupLassoInverter
@@ -10,36 +10,16 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
     properties
 
-        estimation_type (1,1) string { mustBeMember(estimation_type, ["IAS", "EM", "Standardized"]) } = "IAS"
-
-        use_multiresolution (1,1) logical = false;
-
         hyperprior_mode (1,1) string { mustBeMember( ...
             hyperprior_mode, ...
             [ "Sensitivity weights", "Manually selected" ] ...
         ) } = "Sensitivity weights";
 
-        SNR (1,1) double = 1000;
-
-        beta (:,:) double {mustBePositive} = [];
-
-        theta0 (:,:)  double {mustBePositive} = 1e-10;
-
-        n_map_iterations (1,1) int16 {mustBePositive,mustBeInteger} = 25;
+        lambda (:,:) double {mustBePositive} = 3;
 
         n_L1_iterations (1,1) int16 {mustBePositive,mustBeInteger} = 5;
 
-        %
-        % Give the direction interpretation for the algorithm
-        %
-        source_direction_mode (1,1) string { mustBeMember(source_direction_mode,...
-            ["Free orientation", "Fixed orientation"]) } = "Free orientation"
-
-        multiresolution_levels_number (1,1) int16 {mustBePositive,mustBeInteger} = 10;
-
-        multiresolution_sparsity_factor (1,1)  double {mustBeNonnegative} = 0.001;
-
-        multiresolution_decomposition_number (1,1) int16 {mustBePositive,mustBeInteger} = 10;
+        SNR (1,1) double = 1000;
 
         %
         % Parameter for prior variance selection
@@ -81,7 +61,7 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
     methods
 
-        function self = GroupLassoInverter(args)
+        function self = GroupLaplaceInverter(args)
 
             %
             % GroupLassoInverter
@@ -91,29 +71,13 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
             arguments
 
-                args.beta = []
-
-                args.theta0 = 1e-10
+                args.lambda = 3
 
                 args.hyperprior_mode = "Sensitivity weights"
 
-                args.n_map_iterations = 25
-
                 args.n_L1_iterations = 5
 
-                args.estimation_type = "IAS"
-
                 args.SNR = 1000
-
-                args.use_multiresolution = false
-
-                args.source_direction_mode = "Free orientation"
-
-                args.multiresolution_levels_number = 10;
-
-                args.multiresolution_sparsity_factor = 0.001;
-
-                args.multiresolution_decomposition_number = 10;
 
                 args.data_normalization_method = "Maximum entry"
 
@@ -161,29 +125,13 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
             % Initialize own fields.
 
-            self.estimation_type = args.estimation_type;
-
-            self.use_multiresolution = false;
-
-            self.source_direction_mode = args.source_direction_mode;
-
-            self.beta = args.beta;
-
-            self.theta0 = args.theta0;
-
-            self.SNR = args.SNR;
+            self.lambda = args.lambda;
 
             self.hyperprior_mode = args.hyperprior_mode;
 
-            self.n_map_iterations = args.n_map_iterations;
+            self.SNR = args.SNR;
 
             self.n_L1_iterations = args.n_L1_iterations;
-
-            self.multiresolution_levels_number = args.multiresolution_levels_number;
-
-            self.multiresolution_sparsity_factor = args.multiresolution_sparsity_factor;
-
-            self.multiresolution_decomposition_number = args.multiresolution_decomposition_number;
 
             self.initial_prior_steering_db = args.initial_prior_steering_db;
             
@@ -199,22 +147,12 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
             addlistener(self,'noise_cov','PostSet',@(src,evnt)self.setEventsFlags(src,evnt,self));
 
         end
-
-        %This function calculates the
-        %multiresolution decompositions as it would by pressing the make
-        %decomposition button
-        function self = make_multires_dec(self)
-            arguments
-                self (1,1)
-            end
-            [self.multiresolution_dec, self.multiresolution_ind, self.multiresolution_count] = zef_make_multires_dec(self.number_of_decompositions, self.number_of_multiresolution_levels, self.sparsity_factor);
-        end %function
     
         % Declare the initialize and inverse method defined in the files invert and initialize in this same
         % folder.
-        self = initialize(self)
+        self = initialize(self,L,f_data)
 
-        [reconstruction, self] = invert(self)
+        [reconstruction, self] = invert(self,f_data,L)
 
         function self = terminateComputation(self)
             %If the user has not given their own inversion parameters, we

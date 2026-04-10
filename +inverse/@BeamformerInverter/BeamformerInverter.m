@@ -104,6 +104,8 @@ classdef BeamformerInverter < inverse.CommonInverseParameters & handle
 
                 args.time_step = 1
 
+                args.computation_mode = "Waitbar"
+
             end
 
             % Initialize superclass fields.
@@ -147,7 +149,7 @@ classdef BeamformerInverter < inverse.CommonInverseParameters & handle
 
         self = initialize(self)
 
-        [reconstruction, self] = invert(self, f, L, procFile, source_direction_mode)
+        [reconstruction, self] = invert(self, f, L, number_of_sources, fixed_orientation_source_inds, opts)
 
         % Function that ZI runs after all inversions are done for each
         % desired time steps. With this function, one can reset the

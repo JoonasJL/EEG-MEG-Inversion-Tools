@@ -1,5 +1,5 @@
 %% Copyright © 2025- Joonas Lahtinen
-function [z_vec, self] = invert(self, f_data, L, procFile, source_direction_mode, source_positions, opts)
+function [z_vec, self] = invert(self, f_data, L, opts)
 %
     % invert
     %
@@ -49,12 +49,6 @@ function [z_vec, self] = invert(self, f_data, L, procFile, source_direction_mode
 
         L (:,:) {mustBeA(L,["double","gpuArray"])}
 
-        procFile (1,1) struct
-
-        source_direction_mode
-
-        source_positions
-
         opts.use_gpu (1,1) logical = false
 
         opts.normalize_data (1,1) double = 1
@@ -64,10 +58,11 @@ function [z_vec, self] = invert(self, f_data, L, procFile, source_direction_mode
 % Initialize waitbar with a cleanup object that automatically closes the
 % waitbar, if there is an interruption with Ctrl + C or when this function
 % exits.
-if self.number_of_frames <= 1
-    h = zef_waitbar(0,'HALpR Reconstruction.');
-    cleanup_fn = @(wb) close(wb);
-    cleanup_obj = onCleanup(@() cleanup_fn(h));
+if self.number_of_frames <= 1 && strcmp(self.computation_mode,"Waitbar")
+    h = waitbar(0,'HALpR Reconstruction.');
+    waitbar_closed = false;
+else
+    waitbar_closed = true;
 end
 
 estimation_type = self.estimation_type;
@@ -77,6 +72,8 @@ elseif strcmp(estimation_type,"EM")
     estimation_type = 2;
 elseif strcmp(estimation_type,"Standardized")
     estimation_type = 3;
+else
+    estimation_type = 4;
 end
 n_map_iterations = self.n_map_iterations;
 n_L1_iterations = self.n_L1_iterations;
@@ -91,8 +88,14 @@ multires_n_levels = self.multiresolution_levels_number;
 multires_n_decompositions = self.multiresolution_decomposition_number;
 multires_sparsity_factor = self.multiresolution_sparsity_factor;
 
+if strcmp(self.source_direction_mode,"Free orientation")
+    n_interp = round(size(L,2)/3);
+else
+    n_interp = size(L,2);
+end
+
 if use_multires
-    weight_vec_aux = sum(procFile.n_interp./floor(procFile.n_interp*multires_sparsity_factor.^[1-multires_n_levels:0]));
+    weight_vec_aux = sum(n_interp./floor(n_interp*multires_sparsity_factor.^[1-multires_n_levels:0]));
 else
     multires_n_decompositions = 1;
     multires_n_levels = 1;
@@ -111,6 +114,8 @@ elseif estimation_type == 2
     StartTAG = 'HALpR EM';
 elseif estimation_type == 3
     StartTAG = 'SHALpR';
+else
+    StartTAG = 'Laplace';
 end
 self.tag = [StartTAG,EndTAG];
 
@@ -130,6 +135,8 @@ end
 
     if opts.use_gpu == 1 && gpuDeviceCount > 0
         f = gpuArray(f_data);
+    else
+        f = f_data;
     end
 
     % inversion starts here
@@ -137,8 +144,8 @@ end
 
 %_ Iterations over decompositions _
 for n_rep = 1 : multires_n_decompositions
-  if self.number_of_frames <= 1
-    zef_waitbar(n_rep/multires_n_decompositions,h,[self.tag,' MAP iteration. Dec. ' int2str(n_rep) ' of ' int2str(multires_n_decompositions)]);
+  if self.number_of_frames <= 1 && not(waitbar_closed)
+    waitbar(n_rep/multires_n_decompositions,h,[self.tag,' MAP iteration. Dec. ' int2str(n_rep) ' of ' int2str(multires_n_decompositions)]);
   end
 
 %_ Iterations over multiresolution levels _
@@ -147,7 +154,7 @@ for j = 1 : multires_n_levels
     if use_multires
         n_mr_dec = length(multires_dec{n_rep}{j});
 
-        if source_direction_mode == 1 || source_direction_mode == 2
+        if strcmp(self.source_direction_mode,"Free orientation")
             mr_dec = [multires_dec{n_rep}{j}; multires_dec{n_rep}{j}+n_interp ; multires_dec{n_rep}{j} + 2*n_interp];
             mr_dec = mr_dec(:);
             mr_ind = [multires_ind{n_rep}{j} ; multires_ind{n_rep}{j} + n_mr_dec ; multires_ind{n_rep}{j} + 2*n_mr_dec];
@@ -158,7 +165,7 @@ for j = 1 : multires_n_levels
             %-----------------
         end
 
-        if source_direction_mode == 3
+        if strcmp(self.source_direction_mode,"Fixed orientation")
             mr_dec = multires_dec{n_rep}{j};
             mr_dec = mr_dec(:);
             mr_ind = multires_ind{n_rep}{j};
@@ -178,43 +185,10 @@ for j = 1 : multires_n_levels
     end
     source_count = size(L_aux,2)/3;
 
-    if strcmp(hypermode,"Sensitivity weighted")
-        switch q
-            case 1
-                %We use sensitivity weighting and optimality condition for
-                %data that is completely noise to arrive the conclusion
-
-                %Optimality constraint as E[ |L^T*(C\f)| ]
-                c = sum(L_aux.^2,1)*0.6366;
-                sens = 2*repelem(sum(reshape(sum(L_aux.^2),3,[])),3)./self.SNR_variable;
-                root = sqrt(c+8*sens);
-                sqrtc = sqrt(c);
-                ind = 3*sqrtc-root>0;
-                n_ind = not(ind);
-                beta(ind) = 4*sqrtc(ind)./(3*sqrtc(ind)-root(ind));
-
-                beta(n_ind) = 4*sqrtc(n_ind)./(root(n_ind)+3*sqrtc(n_ind));
-                theta0 = (beta./sqrtc)';
-                theta0(beta<2) = sqrt(3.75./sens)';
-                beta(beta<2) = 3.5;  %D.C. 
-                beta = beta';
-
-            case 2
-                %There is no optimization algorithm for beta, so we set it
-                %as
-                %beta = 3.5; %Following the D. Calvetti et al. paper
-                %"Brain Activity Mapping from MEG Data via a Hierarchical Bayesian
-                %Algorithm with Automatic Depth Weighting", Brain Topography (2019) 32:363–393
-                c = transpose((2*self.SNR_variable)./repelem(sum(reshape(sum(L_aux.^2),3,[])),3));
-                beta = 1;
-                theta0 = c;
-        end
-    else
-        %=== Initialize the leadfield model and parameters based on the exp type ===
-        beta = beta + 1/q;
-        if estimation_type == 1
-            beta = beta - 1;
-        end
+    %=== Initialize the leadfield model and parameters based on the exp type ===
+    beta = beta + 1/q;
+    if estimation_type == 1
+        beta = beta - 1;
     end
     
     gamma = zeros(length(z_vec),1)+beta./theta0;
@@ -230,7 +204,8 @@ end
 if q == 1
     x_old = ones(n,1);
     for i = 1 : n_map_iterations(j)
-        z_vec = L1_optimization(L_aux,std_lhood,f,gamma,x_old,n_L1_iterations,estimation_type);
+        z_vec = plugins.LASSOoptimization.L1_optimization(L_aux,S_mat,f,gamma,x_old,n_L1_iterations,estimation_type);
+       
         if sum(isnan(z_vec))>0
             disp(i)
             z_vec(isnan(z_vec))=mean(abs(z_vec(not(isnan(z_vec)))));
@@ -238,21 +213,23 @@ if q == 1
         gamma = beta./(theta0+abs(z_vec));
 
         x_old = z_vec;
-        if multires_n_decompositions == 1 && self.number_of_frames <= 1
+        if multires_n_decompositions == 1 && self.number_of_frames <= 1 && not(waitbar_closed)
             if i/n_map_iterations(j) < 1
-                zef_waitbar(i/n_map_iterations(j),h,[StartTAG,' MAP iteration.']);
+                waitbar(i/n_map_iterations(j),h,[StartTAG,' MAP iteration.']);
             end
         end
     end
 else
     for i = 1 : n_map_iterations(j)
+        if multires_n_decompositions == 1 && self.number_of_frames <= 1
+            tic;
+        end
         if estimation_type == 3
             P = 1./gamma;
             L_aux2 = L_aux.*P';
             R = L_aux2'/(L_aux2*L_aux'+S_mat);
             R = sum(R.'.*L,1);
-            %T_scale_inv = P_sqrt.*sqrt(R)';    %strictly Pascual-Marqui
-            T_scale = 1./sqrt(R)';             %losely Pascual-Marqui
+            T_scale = 1./sqrt(R)';
             clear R P L_aux2
         else
             T_scale = 1;
@@ -264,8 +241,14 @@ else
         end
         z_vec = (T_scale.*w).*(L_aux'*((L_aux*(w.*L_aux') + eye(size(L_aux,1)))\f));
         gamma = beta./(theta0+abs(z_vec).^q);
-        if multires_n_decompositions == 1 && self.number_of_frames <= 1
-            zef_waitbar(i/n_map_iterations(j),h,[StartTAG,' MAP iteration.']);
+        if multires_n_decompositions == 1 && self.number_of_frames <= 1 && mot(waitbar_closed)
+            time_val = toc;
+            if n_map_iterations(j)*time_val > 4
+                waitbar(i/n_map_iterations(j),h,[StartTAG,' MAP iteration.']);
+            elseif not(waitbar_closed)
+                close(h)
+                waitbar_closed = true;
+            end
         end
     end
 end
@@ -291,7 +274,7 @@ if use_multires
     z_vec = z_vec_aux/(multires_n_decompositions*weight_vec_aux);
 end
 
-if self.number_of_frames <= 1
+if self.number_of_frames <= 1 && not(waitbar_closed)
     close(h);
 end
 end

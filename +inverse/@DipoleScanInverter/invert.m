@@ -1,4 +1,4 @@
-function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, source_positions, opts)
+function [z_vec, self] = invert(self, f, L, number_of_sources, fixed_orientation_source_inds, opts)
 
     %
     % invert
@@ -52,11 +52,9 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
 
         L (:,:) {mustBeA(L,["double","gpuArray"])}
 
-        procFile (1,1) struct
+        number_of_sources (1,1) double
 
-        source_direction_mode
-
-        source_positions
+        fixed_orientation_source_inds = []
 
         opts.use_gpu (1,1) logical = false
 
@@ -67,8 +65,8 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
     % Initialize waitbar with a cleanup object that automatically closes the
     % waitbar, if there is an interruption with Ctrl + C or when this function
     % exits.
-    if self.number_of_frames <= 1
-        h = zef_waitbar(0,'Dipole Scan reconstruction.');
+    if self.number_of_frames <= 1 && strcmp(self.computation_mode,"Waitbar")
+        h = waitbar(0,'Dipole Scan reconstruction.');
         cleanup_fn = @(wb) close(wb);
         cleanup_obj = onCleanup(@() cleanup_fn(h));
     end
@@ -84,8 +82,8 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
    f = Chalf\f;
    clear Chalf;
 
-    fixed_orientation_source_inds = procFile.s_ind_4;
-    free_orientation_source_inds=setdiff(1:length(procFile.s_ind_0), procFile.s_ind_4);
+    
+    free_orientation_source_inds=setdiff(1:number_of_sources, fixed_orientation_source_inds);
     free_orientation_source_num = length(free_orientation_source_inds);
     waitbar_update_freq = floor(free_orientation_source_num/10);
     data_norm_sqr = sum(f.^2);
@@ -124,14 +122,12 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
 
 
 
+    if self.number_of_frames <= 1
+        tic;
+    end
+
     %Free orientation scanning
     for i = 1:length(free_orientation_source_inds)
-        %------- Waitbar computations -------
-        if self.number_of_frames <=1
-            tic;
-            time_val = toc;
-            date_str = display_waitbar(h,i,free_orientation_source_num,waitbar_update_freq,date_str,time_val);
-        end
 
         ind3D = 3*free_orientation_source_inds(i) - [2,1,0];
         LF = L(:,ind3D);
@@ -157,8 +153,16 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
         source_est = source_est/sqrt(sum(source_est.^2));
         %sqrt(s^2+s^2+s^2) = sqrt(3)*|s|
         z_vec(ind3D) = z_vec(ind3D).*source_est/sqrt(3);
-    end
 
+        %------- Waitbar computations -------
+        if self.number_of_frames <=1 && strcmp(self.computation_mode,"Waitbar")
+            time_val = toc;
+            date_str = display_waitbar(h,i,free_orientation_source_num,waitbar_update_freq,date_str,time_val);
+        end
+    end
+if strcmp(self.computation_mode,"Waitbar")
+    cleanup_obj();
+end
 end % function
 
 %%
@@ -170,7 +174,7 @@ if index > 1
     end
 
     if mod(index,update_frequency) == 0
-        zef_waitbar(index/max_iter,h,['Step ' int2str(index) ' of ' int2str(max_iter) '. Ready: ' date_str '.' ]);
+        waitbar(index/max_iter,h,['Step ' int2str(index) ' of ' int2str(max_iter) '. Ready: ' date_str '.' ]);
     end
 end
 

@@ -9,6 +9,8 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
 
     properties
 
+        SNR (1,1) double = 1000
+
         %
         % Parameter for prior variance selection
         %
@@ -69,6 +71,8 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
 
                 args.noise_cov = []
 
+                args.SNR = 1000;    
+
                 args.thetaSetted = false;
 
                 args.noise_covSetted = false;
@@ -91,7 +95,7 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
 
                 args.time_start = 0
 
-                args.time_window = 1
+                args.time_window = 0
 
                 args.time_step = 1
 
@@ -113,6 +117,7 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
 
             % Initialize own fields.
 
+            self.SNR = args.SNR;
             self.theta = args.theta;
             self.noise_cov = args.noise_cov;
             self.initial_prior_steering_db = args.initial_prior_steering_db;
@@ -174,18 +179,19 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
         end
 
         self.computing_parameters = true;
-
-        noise_p2 = 10^(-self.signal_to_noise_ratio/10);
+    
+        noise_var = mean(f_data.^2,'all')/self.SNR;
 
         if isempty(self.noise_cov)
             if size(f_data,2) > 1
                 self.noise_cov = cov(f_data');
             else
-                self.noise_cov = noise_p2 * mean(f_data.^2) * eye(size(L,1));
+                self.noise_cov = noise_var*eye(size(f_data,1));
             end
         end
+
+        self.theta = trace(self.noise_cov)*(self.SNR - 1)./repelem(sum(reshape(sum(L.^2),3,[])),3);
         
-        self.theta = mean((1-noise_p2)*10.^(self.initial_prior_steering_db/10)*mean(var(f_data,0,2))./repelem(sum(reshape(sum(L.^2),3,[])),3));
         end % initialize function
 
         %- - - - - - - - - - - - - - - - - - - - - - - - - - - 
@@ -193,7 +199,7 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
         % Declare the inverse method defined in the file invert, in this same
         % folder.
 
-        function [reconstruction, self] = invert(self, f, L, procFile, source_direction_mode, source_positions, opts)
+        function [reconstruction, self] = invert(self, f, L, opts)
             % invert
             %
             % Builds a reconstruction of source dipoles from a given lead field with
@@ -245,12 +251,6 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
         
                 L (:,:) {mustBeA(L,["double","gpuArray"])}
         
-                procFile (1,1) struct
-        
-                source_direction_mode
-        
-                source_positions
-        
                 opts.use_gpu (1,1) logical = false
         
                 opts.normalize_data (1,1) double = 1
@@ -264,11 +264,11 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
             % Initialize waitbar with a cleanup object that automatically closes the
             % waitbar, if there is an interruption with Ctrl + C or when this function
             % exits.
-        
-            if self.number_of_frames <= 1
-                h = zef_waitbar(0,'MNE Reconstruction.');
-                cleanup_fn = @(wb) close(wb);    
-                cleanup_obj = onCleanup(@() cleanup_fn(h));
+            if self.number_of_frames <= 1 && strcmp(self.computation_mode,"Waitbar")
+                h = waitbar(0,'MNE Reconstruction.');
+                waitbar_closed = false;
+            else
+                waitbar_closed = true;
             end
         
             % Get needed parameters from self and others.
@@ -281,6 +281,8 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
                 L = gpuArray(L);
                 f = gpuArray(f);
                 C = gpuArray(self.noise_cov);
+            else
+                C = self.noise_cov;
             end
 
             % Compute the reconstruction
@@ -290,6 +292,10 @@ classdef MNEInverter < inverse.CommonInverseParameters & handle
             % it back for the sake of ZI's visualization or inspection
             if opts.use_gpu && gpuDeviceCount > 0
                 reconstruction = gather(reconstruction);
+            end
+
+            if self.number_of_frames <= 1 && not(waitbar_closed)
+                close(h);
             end
 
         end % invert function

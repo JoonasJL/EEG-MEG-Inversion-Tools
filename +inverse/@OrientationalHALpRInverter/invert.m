@@ -1,16 +1,16 @@
-%% Copyright © 2025- Joonas Lahtinen and Alexandra Koulouri
+%% Copyright © 2025- Joonas Lahtinen
 function [z_vec, self] = invert(self, f_data, L, opts)
 %
     % invert
     %
     % Builds a reconstruction of source dipoles from a given lead field with
-    % the GroupLasso method.
+    % the HALpR method.
     %
     % Inputs:
     %
     % - self
     %
-    %   An instance of GroupLassoInverter with the method-specific parameters.
+    %   An instance of HALpRInverter with the method-specific parameters.
     %
     % - f_data
     %  A matrix containing the time serial measurement data in the format
@@ -43,7 +43,7 @@ function [z_vec, self] = invert(self, f_data, L, opts)
 
     arguments
 
-        self (1,1) inverse.GroupLassoInverter
+        self (1,1) inverse.OrientationalHALpRInverter
 
         f_data (:,:) {mustBeA(f_data,["double","gpuArray"])}
 
@@ -59,23 +59,38 @@ function [z_vec, self] = invert(self, f_data, L, opts)
 % waitbar, if there is an interruption with Ctrl + C or when this function
 % exits.
 if self.number_of_frames <= 1 && strcmp(self.computation_mode,"Waitbar")
-    h = waitbar(0,'GroupLasso Reconstruction.');
+    h = waitbar(0,'HALpR Reconstruction.');
     waitbar_closed = false;
 else
     waitbar_closed = true;
 end
 
 estimation_type = self.estimation_type;
-n_interp = round(size(L,2)/3);
+if strcmp(estimation_type,"IAS")
+    estimation_type = 1;
+elseif strcmp(estimation_type,"EM")
+    estimation_type = 2;
+elseif strcmp(estimation_type,"Standardized")
+    estimation_type = 3;
+end
 n_map_iterations = self.n_map_iterations;
 n_L1_iterations = self.n_L1_iterations;
+hypermode = self.hyperprior_mode;
 beta = self.beta;
 theta0 = self.theta0;
-
+q = self.q;
+snr_val = self.signal_to_noise_ratio;
+std_lhood = 10^(-snr_val/20);
 use_multires = self.use_multiresolution;
 multires_n_levels = self.multiresolution_levels_number;
 multires_n_decompositions = self.multiresolution_decomposition_number;
 multires_sparsity_factor = self.multiresolution_sparsity_factor;
+
+if strcmp(self.source_direction_mode,"Free orientation")
+    n_interp = round(size(L,2)/3);
+else
+    n_interp = size(L,2);
+end
 
 if use_multires
     weight_vec_aux = sum(n_interp./floor(n_interp*multires_sparsity_factor.^[1-multires_n_levels:0]));
@@ -91,16 +106,48 @@ if use_multires
 else
     EndTAG = '';
 end
+if estimation_type == 1
+    StartTAG = 'HALpR IAS';
+elseif estimation_type == 2
+    StartTAG = 'HALpR EM';
+elseif estimation_type == 3
+    StartTAG = 'SHALpR';
+end
+self.tag = [StartTAG,EndTAG];
 
-if strcmp(estimation_type,"IAS")
-    StartTAG = 'Group Lasso IAS';
-elseif strcmp(estimation_type,"EM")
-    StartTAG = 'Group Lasso EM';
-elseif strcmp(estimation_type,"Standardized")
-    StartTAG = 'Standardized Group Lasso';
+%Modify the lead field for the orientational purposes. The script assumes
+%that the lead field indices are ordered as "x1, y1, z1, x2, y2, z2", etc.
+if isempty(self.modified_L)
+    %L = chol(inv(noise_cov))*L;
+    
+    V = zeros(3,size(L,2));
+    scale_parameter = zeros(size(L,2),1);
+    z_scale = zeros(size(L,2),1);
+    for k = 1:round(size(L,2)/3)
+        ind = [3*k-2,3*k-1,3*k];
+        [U_temp,S_temp,V_temp] = svd(L(:,ind));
+        L(:,ind) = U_temp*S_temp;
+        V(:,ind) = V_temp;
+        scale_parameter(ind) = diag(S_temp(1:3,1:3));
+        z_scale(ind) = abs(L(:,ind)'*f_data);
+        if strcmp(self.computation_mode,"Waitbar")
+            waitbar(k/round(size(L,2)/3),h,'Modifying the lead field');
+        end
+    end
+    
+    self.modified_L = L;
+    self.transformMat = V;
+    self.singular_values = scale_parameter;
+    self.z_scale = z_scale;
+    clear U_temp V_temp S_temp
+else
+    L = self.modified_L;
+    V = self.transformMat;
+    scale_parameter = self.singular_values;
+    z_scale = self.z_scale;
 end
 
-self.tag = [StartTAG,EndTAG];
+q = double(q);
 
 S_mat = self.noise_cov;
 if opts.use_gpu == 1 && gpuDeviceCount > 0
@@ -123,10 +170,6 @@ end
     % inversion starts here
     z_vec_aux = zeros(size(L,2),1);
 
-if strcmp(estimation_type,"EM")
-    beta = beta + 1;
-end
-
 %_ Iterations over decompositions _
 for n_rep = 1 : multires_n_decompositions
   if self.number_of_frames <= 1 && not(waitbar_closed)
@@ -148,7 +191,9 @@ for j = 1 : multires_n_levels
             mr_count =  [multires_count{n_rep}{j}; multires_count{n_rep}{j} ; multires_count{n_rep}{j}];
             mr_count = mr_count(mr_ind);
             %-----------------
-        else
+        end
+
+        if strcmp(self.source_direction_mode,"Fixed orientation")
             mr_dec = multires_dec{n_rep}{j};
             mr_dec = mr_dec(:);
             mr_ind = multires_ind{n_rep}{j};
@@ -167,8 +212,14 @@ for j = 1 : multires_n_levels
         L_aux = L;
     end
     source_count = size(L_aux,2)/3;
+
+    %=== Initialize the leadfield model and parameters based on the exp type ===
+    beta = beta + 1/q;
+    if estimation_type == 1
+        beta = beta - 1;
+    end
     
-    gamma = zeros(length(z_vec)/3,1)+beta./theta0;
+    gamma = zeros(length(z_vec),1)+beta./theta0;
 %-----------------------------------------------------------------------------------
 
 %__ Initialization __
@@ -178,37 +229,70 @@ n = size(L_aux,2);
 if opts.use_gpu == 1 && gpuDeviceCount > 0
 z_vec = gather(z_vec);
 end
-x_old = ones(n,1);
-for i = 1 : n_map_iterations(j)
-    if multires_n_decompositions == 1 && self.number_of_frames <= 1
-         tic;
-    end
-    z_vec = plugins.LASSOoptimization.LG_optimization(L_aux,S_mat,f,gamma,x_old,n_L1_iterations,estimation_type);
-    if sum(isnan(z_vec))>0
-        z_vec(isnan(z_vec))=mean(abs(z_vec(not(isnan(z_vec)))));
-    end
-    zL2 = sqrt(sum(reshape(gather(z_vec).^2,3,[])))';
-    gamma = beta./(theta0+zL2);
+if q == 1
+    x_old = ones(n,1);
+    for i = 1 : n_map_iterations(j)
+        if multires_n_decompositions == 1 && self.number_of_frames <= 1
+            tic;
+        end
+        z_vec = plugins.LASSOoptimization.L1_optimization(L_aux,S_mat,f,gamma,x_old,n_L1_iterations,estimation_type);
+       
+        if sum(isnan(z_vec))>0
+            disp(i)
+            z_vec(isnan(z_vec))=mean(abs(z_vec(not(isnan(z_vec)))));
+        end
+        gamma = beta./(theta0+abs(z_vec));
 
-     x_old = z_vec;
-     if multires_n_decompositions == 1 && self.number_of_frames <= 1
-         time_val = toc;
-            if n_map_iterations(j)*time_val > 4 && not(waitbar_closed)
+        x_old = z_vec;
+        if multires_n_decompositions == 1 && self.number_of_frames <= 1 && not(waitbar_closed)
+            time_val = toc;
+            if n_map_iterations(j)*time_val > 4
                 waitbar(i/n_map_iterations(j),h,[StartTAG,' MAP iteration.']);
             elseif not(waitbar_closed)
                 close(h)
                 waitbar_closed = true;
             end
-     end
+        end
+    end
+else
+    for i = 1 : n_map_iterations(j)
+        if estimation_type == 3
+            P = 1./gamma;
+            L_aux2 = L_aux.*P';
+            R = L_aux2'/(L_aux2*L_aux'+S_mat);
+            R = sum(R.'.*L,1);
+            T_scale = 1./sqrt(R)';
+            clear R P L_aux2
+        else
+            T_scale = 1;
+        end
+        
+        w = 1./(gamma*std_lhood^2*max(f)^2);
+        if sum(isnan(z_vec))>0
+            z_vec(isnan(z_vec)) = 0;
+        end
+        z_vec = (T_scale.*w).*(L_aux'*((L_aux*(w.*L_aux') + eye(size(L_aux,1)))\f));
+        gamma = beta./(theta0+abs(z_vec).^q);
+        if multires_n_decompositions == 1 && self.number_of_frames <= 1 && strcmp(self.computation_mode,"Waitbar")
+            waitbar(i/n_map_iterations(j),h,[StartTAG,' MAP iteration.']);
+        end
+    end
 end
 
 if opts.use_gpu == 1 && gpuDeviceCount > 0
 z_vec = gather(z_vec);
 end
 
+for k = 1:round(n/3)
+    ind = [3*k-2,3*k-1,3*k];
+    z_vec(ind) = V(:,ind)*z_vec(ind);
+end
+
+z_vec = z_vec*min(z_scale)/(std_lhood^2*max(f_data.^2,[],'all'));
+
 if use_multires
     if n_map_iterations(j) > 0
-    gamma = gamma(mr_ind(1:3:end));
+    gamma = gamma(mr_ind);
     z_vec = z_vec(mr_ind);
     %theta = theta(mr_ind)./mr_count;
     %z_vec = z_vec(mr_ind)./mr_count;

@@ -101,9 +101,9 @@ classdef DipoleScanInverter < inverse.CommonInverseParameters & handle
         % Declare the inverse method defined in the file invert, in this same
         % folder.
 
-        self = initialize(self)
+        self = initialize(self,L,f)
 
-        [reconstruction, self] = invert(self, f, L, procFile, source_direction_mode)
+        [reconstruction, self] = invert(self, f, L, number_of_sources, fixed_orientation_source_inds, opts)
 
     end % methods
 

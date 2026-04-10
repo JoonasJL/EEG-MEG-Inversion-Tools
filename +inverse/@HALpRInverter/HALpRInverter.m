@@ -18,7 +18,7 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
         % Sequential), "EM" (Expectation Maximization) or "Standardized"
         % that uses the standardization technique known from sLORETA method.
         %
-        estimation_type (1,1) string { mustBeMember(estimation_type, ["IAS", "EM", "Standardized"]) } = "IAS"
+        estimation_type (1,1) string { mustBeMember(estimation_type, ["IAS", "EM", "Standardized", "None"]) } = "IAS"
 
         %
         % Logical parameter to determine if multiresolution technique is
@@ -34,24 +34,32 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
         %
         hyperprior_mode (1,1) string { mustBeMember( ...
             hyperprior_mode, ...
-            [ "Sensitivity weighted", "Manually selected" ] ...
-        ) } = "Sensitivity weighted";
+            [ "Sensitivity weights", "Manually selected" ] ...
+        ) } = "Sensitivity weights";
+
+        %
+        % Give the direction interpretation for the algorithm
+        %
+        source_direction_mode (1,1) string { mustBeMember(source_direction_mode,...
+            ["Free orientation", "Fixed orientation"]) } = "Free orientation"
 
         %
         % Shape parameter of the gamma hyperprior.
         %
-        beta (1,1) double {mustBePositive} = 3;
+        beta (:,:) double {mustBePositive} = [];
 
         %
         % Scale parameter of the gamma hyperprior.
         %
-        theta0 (1,1)  double {mustBePositive} = 1e-10;
+        theta0 (:,:)  double {mustBePositive} = 1e-10;
 
         %
         % The p-parameter for Lp-regularization: gamma*|x|^p
         % The current optioms are 1 and 2.
         %
         q (1,1) int8 {mustBeInRange(q,1,2)} = 1;
+
+        SNR (1,1) double = 1000;
 
         %
         % Number of hyperparameter updating iterations.
@@ -134,13 +142,15 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
 
             arguments
 
-                args.beta = 3
+                args.beta = []
 
                 args.theta0 = 1e-10
 
                 args.q = 1
 
-                args.hyperprior_mode = "Sensitivity weighted"
+                args.SNR = 1000
+
+                args.hyperprior_mode = "Sensitivity weights"
 
                 args.n_map_iterations = 25
 
@@ -157,6 +167,8 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
                 args.multiresolution_decomposition_number = 10;
 
                 args.data_normalization_method = "Maximum entry"
+
+                args.source_direction_mode = "Free orientation"
 
                 args.high_cut_frequency = 9
 
@@ -212,6 +224,8 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
 
             self.q = args.q;
 
+            self.SNR = args.SNR;
+
             self.hyperprior_mode = args.hyperprior_mode;
 
             self.n_map_iterations = args.n_map_iterations;
@@ -225,6 +239,8 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
             self.multiresolution_decomposition_number = args.multiresolution_decomposition_number;
 
             self.initial_prior_steering_db = args.initial_prior_steering_db;
+
+            self.source_direction_mode = args.source_direction_mode;
             
             self.tag = args.tag;
 
@@ -256,9 +272,9 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
     
         % Declare the initialize and inverse method defined in the files invert and initialize in this same
         % folder.
-        self = initialize(self)
+        self = initialize(self, L, f_data)
 
-        [reconstruction, self] = invert(self)
+        [reconstruction, self] = invert(self, f_data, L, opts)
 
         function self = terminateComputation(self)
             % Function to reset the values that are changed during
@@ -267,8 +283,7 @@ classdef HALpRInverter < inverse.CommonInverseParameters & dynamicprops
             %If the user has not given their own inversion parameters, we
             %reset the automatically computed parameters because the user 
             %could change the data or model between separate runs.
-            SNR_variable = findprop(self,'SNR_variable');
-            delete(SNR_variable);
+            
             if not(self.noise_covSetted)
                 self.noise_cov = [];
             end

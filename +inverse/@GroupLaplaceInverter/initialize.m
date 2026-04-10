@@ -29,7 +29,7 @@ function self = initialize(self,L,f_data)
     
         arguments
     
-            self (1,1) inverse.GroupLassoInverter
+            self (1,1) inverse.GroupLaplaceInverter
     
             L (:,:) {mustBeA(L,["double","gpuArray"])}
     
@@ -37,25 +37,13 @@ function self = initialize(self,L,f_data)
     
         end
 
-        if not(isprop(self,'SNR_variable'))
-            self.addprop('SNR_variable');
-        end
-
         noise_var = mean(f_data.^2,'all')/self.SNR;
+        self.noise_cov = noise_var*eye(size(f_data,1));
 
-        if isempty(self.noise_cov)
-            if size(f_data,2) > 1
-                self.noise_cov = cov(f_data');
-            else
-                self.noise_cov = noise_var*eye(size(f_data,1));
-            end
-        end
-        
         if strcmp(self.hyperprior_mode,"Sensitivity weights")
-            if isempty(self.beta)
-                self.beta = 3.5;
-            end
-            self.theta0 = sqrt(((self.beta-1)*(self.beta-2)/4)*trace(self.noise_cov)*(self.SNR - 1)./sum(reshape(sum(L.^2),3,[])));
+            self.lambda = sqrt(4*repelem(sum(reshape(sum(L.^2),3,[])),3)/(trace(self.noise_cov)*(self.SNR - 1)));
+        
         end
-        self.theta0 = self.theta0(:);
+        self.lambda = self.lambda(:);
+        
 end

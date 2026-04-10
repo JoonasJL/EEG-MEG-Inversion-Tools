@@ -102,6 +102,16 @@ classdef (HandleCompatible) CommonInverseParameters < dynamicprops
         normalize_reconstruction (1,1) logical = false;
 
         %
+        % computation mode
+        % options: Waitbar, Quiet
+        % This property defines whether waitbars are created and shown or
+        % not. For multiple fast computations, author advices to use "quiet"
+        % mode.
+        computation_mode (1,1) string { mustBeMember(computation_mode,...
+            [ "Waitbar", "Quiet" ] ...
+        ) } = "Waitbar";
+
+        %
         % GMM
         %
         % Gaussian mixture model structure
@@ -202,6 +212,8 @@ classdef (HandleCompatible) CommonInverseParameters < dynamicprops
                 args.signal_to_noise_ratio = 30;
 
                 args.normalize_reconstruction = false;
+
+                args.computation_mode = "Waitbar";
 
             end % arguments
 

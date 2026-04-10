@@ -1,4 +1,4 @@
-function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, source_positions, opts)
+function [z_vec, self] = invert(self, f, L, number_of_sources, fixed_orientation_source_inds, opts)
 
     %
     % invert
@@ -52,17 +52,16 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
 
         L (:,:) {mustBeA(L,["double","gpuArray"])}
 
-        procFile (1,1) struct
+        number_of_sources (1,1) double
 
-        source_direction_mode
-
-        source_positions
+        fixed_orientation_source_inds = []
 
         opts.use_gpu (1,1) logical = false
 
         opts.normalize_data (1,1) double = 1
 
     end
+
     self.computing_parameters = false;
     % Initialize waitbar with a cleanup object that automatically closes the
     % waitbar, if there is an interruption with Ctrl + C or when this function
@@ -87,8 +86,7 @@ function [z_vec, self] = invert(self, f, L, procFile, source_direction_mode, sou
         L_modified = C\L;
     end
 
-    fixed_orientation_source_inds = procFile.s_ind_4;
-    free_orientation_source_inds=setdiff(1:length(procFile.s_ind_0), procFile.s_ind_4);
+    free_orientation_source_inds=setdiff(1:number_of_sources, fixed_orientation_source_inds);
     free_orientation_source_num = length(free_orientation_source_inds);
     waitbar_update_freq = floor(free_orientation_source_num/10);
     

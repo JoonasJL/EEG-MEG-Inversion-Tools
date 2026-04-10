@@ -1,33 +1,41 @@
-%% Copyright © 2025- Joonas Lahtinen and Alexandra Koulouri
-classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
+classdef OrientationalHALpRInverter < inverse.CommonInverseParameters & dynamicprops
 
     %
-    % GroupLassoInverter
+    % HALpRInverter, Copyright © 2025- Joonas Lahtinen
     %
-    % A class which defines the properties needed by the GroupLasso inversion method,
+    % A class which defines the properties needed by the Hierarchical Adaptive Lp-Regression (HALpR) inversion method,
     % and the method itself.
+    % The method is based on the one introduced in the article:
+    % "Standardized hierarchical adaptive Lp regression for noise robust focal epilepsy source reconstructions". 
+    % In: Clinical neurophysiology 159 (2024)
+    % DOI: https://doi.org/10.1016/j.clinph.2023.12.001
     %
 
     properties
 
+        %
+        % Estimation type that is either "IAS" (Iterative Altenating
+        % Sequential), "EM" (Expectation Maximization) or "Standardized"
+        % that uses the standardization technique known from sLORETA method.
+        %
         estimation_type (1,1) string { mustBeMember(estimation_type, ["IAS", "EM", "Standardized"]) } = "IAS"
 
+        %
+        % Logical parameter to determine if multiresolution technique is
+        % used or not.
+        %
         use_multiresolution (1,1) logical = false;
 
+        %
+        % Method for hyperparameter selection. Options are:
+        % - "Sensitivity weighted"
+        % - "Manually selected" (set the parameters theta0 and beta by
+        % hand)
+        %
         hyperprior_mode (1,1) string { mustBeMember( ...
             hyperprior_mode, ...
             [ "Sensitivity weights", "Manually selected" ] ...
         ) } = "Sensitivity weights";
-
-        SNR (1,1) double = 1000;
-
-        beta (:,:) double {mustBePositive} = [];
-
-        theta0 (:,:)  double {mustBePositive} = 1e-10;
-
-        n_map_iterations (1,1) int16 {mustBePositive,mustBeInteger} = 25;
-
-        n_L1_iterations (1,1) int16 {mustBePositive,mustBeInteger} = 5;
 
         %
         % Give the direction interpretation for the algorithm
@@ -35,10 +43,57 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
         source_direction_mode (1,1) string { mustBeMember(source_direction_mode,...
             ["Free orientation", "Fixed orientation"]) } = "Free orientation"
 
+        %
+        % Shape parameter of the gamma hyperprior.
+        %
+        beta (:,:) double {mustBePositive} = [];
+
+        %
+        % Scale parameter of the gamma hyperprior.
+        %
+        theta0 (:,:)  double {mustBePositive} = 1e-10;
+
+        %
+        % The p-parameter for Lp-regularization: gamma*|x|^p
+        % The current optioms are 1 and 2.
+        %
+        q (1,1) int8 {mustBeInRange(q,1,2)} = 1;
+
+        SNR (1,1) double = 1000;
+
+        modified_L (:,:) {mustBeA(modified_L,["double","gpuArray"])} = [];
+
+        transformMat (:,:) {mustBeA(transformMat,["double","gpuArray"])} = [];
+
+        singular_values (:,:) {mustBeA(singular_values,["double","gpuArray"])} = [];
+
+        z_scale (:,:) {mustBeA(z_scale,["double","gpuArray"])} = [];
+
+        %
+        % Number of hyperparameter updating iterations.
+        %
+        n_map_iterations (1,1) int16 {mustBePositive,mustBeInteger} = 25;
+
+        %
+        % Number of MM-LQA iteration steps to estimate L1-optimum (q=1).
+        %
+        n_L1_iterations (1,1) int16 {mustBePositive,mustBeInteger} = 5;
+
+        %
+        % Number of multiresolution levels
+        %
         multiresolution_levels_number (1,1) int16 {mustBePositive,mustBeInteger} = 10;
 
-        multiresolution_sparsity_factor (1,1)  double {mustBeNonnegative} = 0.001;
+        %
+        % Sparsity factos that indicates how many times smaller the coarser
+        % level is compared to the one-step-finer, i.e., if finer level has
+        % 10,000 sources and the sparsity factor is 10, the next level has
+        % 1,000 sources and so on.
+        multiresolution_sparsity_factor (1,1)  double {mustBeNonnegative} = 10;
 
+        %
+        % Number of decompositions, i.e., Monte Carlo iterations for source
+        % spaces.
         multiresolution_decomposition_number (1,1) int16 {mustBePositive,mustBeInteger} = 10;
 
         %
@@ -79,12 +134,16 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
     end
 
+    properties (SetAccess = protected)
+        DOI (1,1) string = "https://doi.org/10.1016/j.clinph.2023.12.001"
+    end
+
     methods
 
-        function self = GroupLassoInverter(args)
+        function self = OrientationalHALpRInverter(args)
 
             %
-            % GroupLassoInverter
+            % HALpRInverter
             %
             % The constructor for this class.
             %
@@ -95,6 +154,10 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
                 args.theta0 = 1e-10
 
+                args.q = 1
+
+                args.SNR = 1000
+
                 args.hyperprior_mode = "Sensitivity weights"
 
                 args.n_map_iterations = 25
@@ -103,11 +166,7 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
                 args.estimation_type = "IAS"
 
-                args.SNR = 1000
-
                 args.use_multiresolution = false
-
-                args.source_direction_mode = "Free orientation"
 
                 args.multiresolution_levels_number = 10;
 
@@ -116,6 +175,8 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
                 args.multiresolution_decomposition_number = 10;
 
                 args.data_normalization_method = "Maximum entry"
+
+                args.source_direction_mode = "Free orientation"
 
                 args.high_cut_frequency = 9
 
@@ -143,6 +204,14 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
                 args.computing_parameters = false
 
+                args.modified_L = [];
+
+                args.transformMat = [];
+
+                args.singular_values = [];
+
+                args.z_scale = [];
+            
             end
 
             % Initialize superclass fields.
@@ -165,11 +234,11 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
             self.use_multiresolution = false;
 
-            self.source_direction_mode = args.source_direction_mode;
-
             self.beta = args.beta;
 
             self.theta0 = args.theta0;
+
+            self.q = args.q;
 
             self.SNR = args.SNR;
 
@@ -186,6 +255,8 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
             self.multiresolution_decomposition_number = args.multiresolution_decomposition_number;
 
             self.initial_prior_steering_db = args.initial_prior_steering_db;
+
+            self.source_direction_mode = args.source_direction_mode;
             
             self.tag = args.tag;
 
@@ -195,8 +266,19 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
 
             self.computing_parameters = args.computing_parameters;
 
+            self.modified_L = args.modified_L;
+
+            self.transformMat = args.transformMat;
+
+            self.singular_values = args.singular_values;
+
+            self.z_scale = args.z_scale;
+
             % Initialize listeners 
             addlistener(self,'noise_cov','PostSet',@(src,evnt)self.setEventsFlags(src,evnt,self));
+
+            %Print the statement
+            self.InitialStatement
 
         end
 
@@ -204,6 +286,8 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
         %multiresolution decompositions as it would by pressing the make
         %decomposition button
         function self = make_multires_dec(self)
+            %Function to make multiresolution decomposition that
+            %multiresolution computation uses.
             arguments
                 self (1,1)
             end
@@ -212,16 +296,18 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
     
         % Declare the initialize and inverse method defined in the files invert and initialize in this same
         % folder.
-        self = initialize(self)
+        self = initialize(self, L, f_data)
 
-        [reconstruction, self] = invert(self)
+        [reconstruction, self] = invert(self, f_data, L, opts)
 
         function self = terminateComputation(self)
+            % Function to reset the values that are changed during
+            %inverse computations.
+
             %If the user has not given their own inversion parameters, we
             %reset the automatically computed parameters because the user 
             %could change the data or model between separate runs.
-            SNR_variable = findprop(self,'SNR_variable');
-            delete(SNR_variable);
+            
             if not(self.noise_covSetted)
                 self.noise_cov = [];
             end
@@ -243,6 +329,21 @@ classdef GroupLassoInverter < inverse.CommonInverseParameters & dynamicprops
              end
          end
         end % function
+
+        function InitialStatement 
+            txt = strcat('This class object is for computing inversion with the Hierarchical\n'...
+                , 'Adaptive Lp regularization method (HALpR) or the Standardized Hierarchi-\n'...
+                ,'cal Adaptive Lp regularization method (SHALpR).\n' ...
+                , 'If You find this method useful for Your thesis, or research or refer to\n'...
+                , 'it in any text format, please consider citing the following article:\n\n' ...
+                , 'Joonas Lahtinen, Alexandra Koulouri, Stefan Rampp, Jörg Wellmer,\n'...
+                , 'Carsten Wolters, and Sampsa Pursiainen. "Standardized hierarchical\n'... 
+                , 'adaptive Lp regression for noise robust focal epilepsy source recon-\n'...
+                , 'structions". In: Clinical neurophysiology 159 (2024), pp. 24–40.\n'...
+                , 'ISSN: 1388-2457. DOI: https://doi.org/10.1016/j.clinph.2023.12.001.\n');
+            
+            fprintf(txt)
+        end
     end % static methods
 
 end % classdef
