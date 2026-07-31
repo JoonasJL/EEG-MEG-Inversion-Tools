@@ -5,8 +5,8 @@ function [m, P] = class_kf_predict(KFclassObj)
         P = KFclassObj.prev_step_posterior_cov  + KFclassObj.evolution_cov;
         m = KFclassObj.prev_step_reconstruction;
     else
-        % Basic kalman prediction steps
-        m = KFclassObj.state_transition_model_A * self.prev_step_reconstruction;
+        % Basic Kalman prediction steps
+        m = KFclassObj.state_transition_model_A * KFclassObj.prev_step_reconstruction;
         P = KFclassObj.state_transition_model_A * KFclassObj.prev_step_posterior_cov * KFclassObj.state_transition_model_A' + KFclassObj.evolution_cov;
     end
 end
